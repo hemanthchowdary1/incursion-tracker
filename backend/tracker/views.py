@@ -1,14 +1,14 @@
+import os
+import requests
+import random
+import logging
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
-from django.core.mail import send_mail
 from django.core.cache import cache
-import random
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
-from .models import UserProgress
-import logging
 from django.db import IntegrityError
 from .models import UserProgress, MarvelNews
 
@@ -37,16 +37,40 @@ def request_otp(request):
     # Save OTP in cache for 5 minutes (300 seconds), tied to the email
     cache.set(f"otp_{email}", otp, timeout=300)
     
-    # Send the email
+    # Send the email via Brevo HTTP API
+    url = "https://api.brevo.com/v3/smtp/email"
+    api_key = os.environ.get('BREVO_API_KEY')
+    
+    if not api_key:
+        logger.error("BREVO_API_KEY is missing from environment variables.")
+        return Response({'error': 'Server configuration error'}, status=500)
+
+    payload = {
+        "sender": {
+            "name": "Hemanth",
+            "email": "hemanthchowdary.dev@gmail.com"
+        },
+        "to": [
+            {"email": email}
+        ],
+        "subject": "Incursion Tracker - Verification Code",
+        "htmlContent": f"<html><body><p>Welcome Agent.</p><p>Your timeline verification code is: <strong>{otp}</strong></p><p>This code expires in 5 minutes.</p><br><p><small>(If you did not request this code, you can safely ignore this email.)</small></p></body></html>"
+    }
+
+    headers = {
+        "accept": "application/json",
+        "api-key": api_key,
+        "content-type": "application/json"
+    }
+
     try:
-        send_mail(
-            subject='Incursion Tracker - Verification Code',
-            message=f'\nWelcome Agent.\n\nYour timeline verification code is: {otp}\n\nThis code expires in 5 minutes.\n\n\n(If you did not request this code, you can safely ignore this email.)',
-            from_email=None,
-            recipient_list=[email],
-            fail_silently=False,
-        )
-        return Response({'message': 'OTP sent to email'}, status=200)
+        response = requests.post(url, json=payload, headers=headers)
+        # Brevo returns 201 on success
+        if response.status_code in [200, 201, 202]:
+            return Response({'message': 'OTP sent to email'}, status=200)
+        else:
+            logger.error(f"Brevo API Error: {response.status_code} - {response.text}")
+            return Response({'error': 'Failed to send email'}, status=500)
     except Exception as e:
         logger.error(f"Failed to send OTP email to {email}: {e}")
         return Response({'error': 'Failed to send email'}, status=500)
@@ -65,8 +89,7 @@ def verify_and_register(request):
     if not saved_otp or saved_otp != otp_entered:
         return Response({'error': 'Invalid or expired OTP'}, status=400)
         
-    # Re-check availability right before creating — a second signup could have
-    # slipped in between the OTP request and this verification step
+    # Re-check availability right before creating
     if User.objects.filter(username=username).exists():
         return Response({'error': 'Username already taken'}, status=400)
     if User.objects.filter(email=email).exists():
@@ -81,7 +104,6 @@ def verify_and_register(request):
     # Delete the OTP from cache so it can't be reused
     cache.delete(f"otp_{email}")
     
-    # Added the username here so React knows who just signed up!
     return Response({'message': 'Account created successfully', 'username': user.username}, status=201)
 
 @api_view(['POST'])
@@ -92,7 +114,6 @@ def login_user(request):
     user = authenticate(username=username, password=password)
 
     if user is not None:
-        # Now return the username so React can store it and use it to sync data!
         return Response({'message': 'Login successful', 'username': user.username})
     else:
         return Response({'error': 'Invalid credentials'}, status=400)
@@ -107,7 +128,6 @@ def get_all_titles(request):
 
 @api_view(['GET', 'POST'])
 def sync_progress(request):
-    # Identify which user is requesting/saving data
     username = request.data.get('username') or request.GET.get('username')
     
     if not username:
@@ -118,25 +138,18 @@ def sync_progress(request):
     except User.DoesNotExist:
         return Response({"error": "User not found"}, status=404)
          
-    # Fetch the user's progress record
     progress, created = UserProgress.objects.get_or_create(user=user)
     
     if request.method == 'POST':
-        # React is sending an updated list of checked-off IDs to save
         watched_ids = request.data.get('watched_ids', [])
         progress.watched_ids = watched_ids
         progress.save()
         return Response({"message": "Timeline secured.", "watched_ids": progress.watched_ids})
          
-    # If it's a GET request, just return the user's saved data so React can load it
     return Response({"watched_ids": progress.watched_ids})
 
 @api_view(['GET'])
 def get_marvel_news(request):
-    # Fetch only active news items, grab the most recent 5
     news_items = MarvelNews.objects.filter(is_active=True)[:5]
-    
-    # Format the data into a clean dictionary list for React
     data = [{"title": item.title} for item in news_items]
-    
     return Response(data)
