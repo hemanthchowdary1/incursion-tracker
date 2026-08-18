@@ -19,7 +19,7 @@ def request_otp(request):
     email = request.data.get('email', '').strip()
     username = request.data.get('username', '').strip().lower()
     
-    # STEP 1: Strict formatting validation
+    # Strict formatting validation
     try:
         validate_email(email)
     except ValidationError:
@@ -34,7 +34,7 @@ def request_otp(request):
     # Generate a 6-digit OTP
     otp = str(random.randint(100000, 999999))
     
-    # Save OTP in cache for 5 minutes (300 seconds), tied to the email
+    # Save OTP in cache for 5 minutes
     cache.set(f"otp_{email}", otp, timeout=300)
     
     # Send the email via Brevo HTTP API
@@ -48,7 +48,7 @@ def request_otp(request):
     payload = {
         "sender": {
             "name": "Hemanth",
-            "email": "hemanthchowdary.dev@gmail.com"
+            "email": os.environ.get('DEFAULT_FROM_EMAIL')
         },
         "to": [
             {"email": email}
@@ -95,7 +95,7 @@ def verify_and_register(request):
     if User.objects.filter(email=email).exists():
         return Response({'error': 'Email already registered'}, status=400)
 
-    # Create the user!
+    # Create the user
     try:
         user = User.objects.create_user(username=username, email=email, password=password)
     except IntegrityError:
